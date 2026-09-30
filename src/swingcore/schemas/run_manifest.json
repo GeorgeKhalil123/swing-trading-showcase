@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "swingcore/run_manifest.json",
+  "title": "run manifest (trimmed)",
+  "description": "Everything one run produced. Trimmed from the private system's manifest to the parts that record what ran and what is missing: stages, failures, gaps, usage. The decision blocks are not part of the showcase. Relations no schema can express are checked in swingcore.manifest.cross_check.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "run_type",
+    "backend",
+    "date",
+    "as_of",
+    "research",
+    "summaries",
+    "ticker_meta",
+    "agent_failures",
+    "data_gaps",
+    "usage",
+    "stages"
+  ],
+  "$defs": {
+    "ticker": {"type": "string", "pattern": "^[A-Z0-9.\\-]{1,10}$"},
+    "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+    "ticker_meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sector"],
+      "properties": {
+        "sector": {
+          "type": ["string", "null"],
+          "description": "null when the data layer had no sector; the run must then carry a matching data gap."
+        },
+        "last": {"type": "number"}
+      }
+    }
+  },
+  "properties": {
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\-]{0,64}$"},
+    "run_type": {"enum": ["morning", "midday", "postmortem"]},
+    "backend": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The backend that answered every agent call; `fake` marks a fixture-backed rehearsal whose usage table is not real research."
+    },
+    "date": {"$ref": "#/$defs/date"},
+    "as_of": {"type": "string", "minLength": 10},
+    "research": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[A-Z0-9.\\-]{1,10}$"},
+      "additionalProperties": {"type": "array", "items": {"type": "object"}}
+    },
+    "summaries": {
+      "type": "object",
+      "description": "Per-ticker roll-up computed in Python from the validated agent outputs.",
+      "propertyNames": {"pattern": "^[A-Z0-9.\\-]{1,10}$"},
+      "additionalProperties": {"type": "object"}
+    },
+    "ticker_meta": {"type": "object", "additionalProperties": {"$ref": "#/$defs/ticker_meta"}},
+    "agent_failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["agent", "ticker", "stage", "error"],
+        "properties": {
+          "agent": {"type": "string", "minLength": 1},
+          "ticker": {"type": "string"},
+          "stage": {"type": "string", "minLength": 1},
+          "error": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "data_gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ticker", "field", "detail"],
+        "properties": {
+          "ticker": {"type": "string"},
+          "field": {"type": "string", "minLength": 1},
+          "detail": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "usage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agent",
+          "model",
+          "backend",
+          "calls",
+          "cached_calls",
+          "input_tokens",
+          "output_tokens",
+          "cost_usd",
+          "spent_usd"
+        ],
+        "properties": {
+          "agent": {"type": "string", "minLength": 1},
+          "model": {"type": "string"},
+          "backend": {"type": "string", "minLength": 1},
+          "calls": {"type": "integer", "minimum": 0},
+          "cached_calls": {"type": "integer", "minimum": 0},
+          "input_tokens": {"type": "integer", "minimum": 0},
+          "output_tokens": {"type": "integer", "minimum": 0},
+          "cost_usd": {
+            "type": "number",
+            "minimum": 0,
+            "description": "What these answers cost when they were produced; a cached call restores the tokens and cost of the call that filled the cache."
+          },
+          "spent_usd": {
+            "type": "number",
+            "minimum": 0,
+            "description": "What this run actually paid. A call served from the cache adds nothing here, so spent_usd <= cost_usd always."
+          }
+        }
+      }
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Which pipeline stages this run executed. Authoritative: the report prints the ones that did not run.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "status", "note"],
+        "properties": {
+          "stage": {"type": "string", "minLength": 1},
+          "status": {"enum": ["ran", "not_run", "failed"]},
+          "note": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

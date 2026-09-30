@@ -1,0 +1,14 @@
+{
+ "agent": "echo_trend_agent",
+ "ticker": "AAA",
+ "as_of": "2026-09-11T16:30:00-04:00",
+ "trend": "flat",
+ "strength": "weak",
+ "quoted": [
+  {"field": "close", "value": 169.0972},
+  {"field": "sma_20", "value": 167.5013},
+  {"field": "sma_50", "value": 168.2762},
+  {"field": "ret_1m", "value": -0.0611}
+ ],
+ "note": "TOY FIXTURE. Close sits above the 20-day average but below the 50-day, after a one-month decline; no clear direction."
+}

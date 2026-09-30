@@ -1,0 +1,11 @@
+{
+ "agent": "echo_trend_agent",
+ "ticker": "BBB",
+ "as_of": "2026-09-11T16:30:00-04:00",
+ "trend": "sideways",
+ "strength": "weak",
+ "quoted": [
+  {"field": "close", "value": 96.3203}
+ ],
+ "note": "TOY FIXTURE, INVALID ON PURPOSE: 'sideways' is not in the schema's enum, so the runtime retries once and then records the agent as failed."
+}

@@ -1,0 +1,9 @@
+[Unit]
+Description=swingcore morning cycle (weekdays 07:30 America/New_York)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 07:30:00 America/New_York
+Persistent=true
+
+[Install]
+WantedBy=timers.target

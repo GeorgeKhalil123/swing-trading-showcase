@@ -1,0 +1,8 @@
+# Example crontab for a daily cycle. cron fires on wall-clock weekdays; the trading-day guard
+# (python -m swingcore.trading_day_guard) is what skips NYSE holidays, and it exits non-zero so the
+# cycle after `&&` never starts on a closed day.
+CRON_TZ=America/New_York
+SHELL=/bin/bash
+
+# m  h  dom mon dow  command
+30   7  *   *   1-5  cd "$HOME/swing-trading-showcase" && mkdir -p cache && .venv/bin/python -m swingcore.trading_day_guard --quiet && .venv/bin/python -m swingcore.demo --dry-run --out "cache/$(date +\%F)-morning.json"

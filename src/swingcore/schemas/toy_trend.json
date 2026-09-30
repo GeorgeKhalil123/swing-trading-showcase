@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "swingcore/toy_trend.json",
+  "title": "echo_trend_agent (TOY)",
+  "description": "A toy schema written for the showcase demo. The agent reads a finished indicator table and names a trend; every number it mentions must be quoted from that table (enforced in code, not asked for in a prompt).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agent", "ticker", "as_of", "trend", "strength", "quoted", "note"],
+  "properties": {
+    "agent": {"const": "echo_trend_agent"},
+    "ticker": {"type": "string", "pattern": "^[A-Z0-9.\\-]{1,10}$"},
+    "as_of": {"type": "string", "minLength": 10},
+    "trend": {"enum": ["up", "down", "flat"]},
+    "strength": {"enum": ["weak", "moderate", "strong"]},
+    "quoted": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "value"],
+        "properties": {
+          "field": {"type": "string", "minLength": 1},
+          "value": {"type": "number"}
+        }
+      }
+    },
+    "note": {"type": "string", "minLength": 1, "maxLength": 280}
+  }
+}
