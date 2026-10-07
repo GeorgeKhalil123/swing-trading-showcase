@@ -81,6 +81,29 @@ def test_known_at_compares_instants_not_strings(cache: Cache) -> None:
     assert cache.get_payload("fund", "E", known_at="2026-09-14T20:31:00-04:00") is not None
 
 
+def test_as_of_compares_instants_not_strings(cache: Cache) -> None:
+    """18:00 in New York is 22:00 UTC. As text, `...T18:00:00-04:00` sorts before `...T21:00:00+00:00`,
+    so a 21:00 UTC read would have been served a value that describes an hour later."""
+    cache.put_payload("fund", "G", {"eps": 1.0}, "synthetic", as_of="2026-09-14T18:00:00-04:00")
+    assert cache.get_payload("fund", "G", as_of="2026-09-14T21:00:00+00:00") is None, "lookahead"
+    hit = cache.get_payload("fund", "G", as_of="2026-09-14T22:00:00+00:00")
+    assert hit is not None and hit.as_of == "2026-09-14T18:00:00-04:00", "returned as written"
+
+
+def test_as_of_does_not_hide_an_earlier_instant_written_in_another_offset(cache: Cache) -> None:
+    """20:00 UTC is 16:00 in New York, so a 16:30 New York read has to see it; as text it sorts later."""
+    cache.put_payload("fund", "H", {"eps": 1.0}, "synthetic", as_of="2026-09-14T20:00:00+00:00")
+    hit = cache.get_payload("fund", "H", as_of="2026-09-14T16:30:00-04:00")
+    assert hit is not None and hit.data == {"eps": 1.0}
+
+
+def test_the_latest_payload_is_the_latest_instant_not_the_largest_string(cache: Cache) -> None:
+    cache.put_payload("fund", "I", {"eps": 1.0}, "synthetic", as_of="2026-09-14T21:00:00+00:00")
+    cache.put_payload("fund", "I", {"eps": 2.0}, "synthetic", as_of="2026-09-14T18:00:00-04:00")
+    hit = cache.get_payload("fund", "I")
+    assert hit is not None and hit.data == {"eps": 2.0}, "22:00 UTC is later than 21:00 UTC"
+
+
 def test_bars_downloaded_after_the_replay_moment_are_refused(cache: Cache) -> None:
     df = make_bars(n=20)
     cache.upsert_bars("F", df.iloc[:10], "synthetic", fetched_at="2025-01-20T00:00:00+00:00")
@@ -104,6 +127,9 @@ def test_a_cache_file_written_before_fetched_at_existed_is_migrated(tmp_path: Pa
     assert hit is not None and hit.data == {"eps": 3.0} and hit.fetched_at == ""
     assert migrated.get_payload("fund", "D", known_at="2030-01-01") is None, (
         "unknown fetch time is not 'always'"
+    )
+    assert migrated.get_payload("fund", "D", as_of="2024-12-31T23:00:00-05:00") is not None, (
+        "an old row is given a UTC stamp, so offset-aware cut-offs still find it"
     )
 
 

@@ -1,3 +1,10 @@
+# A *user* unit: %h is the invoking user's home. Install with
+#   cp deploy/systemd/swingcore-morning.* ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now swingcore-morning.timer
+# (and `loginctl enable-linger $USER` so it fires without an open session).
+#
+# ExecCondition: guard exit 0 runs the cycle, 1 (weekend/holiday) skips it quietly, and 255 (the
+# guard cannot tell, e.g. the calendar does not cover the year) marks the unit failed.
 [Unit]
 Description=swingcore morning cycle, skipped on NYSE holidays by the trading-day guard
 

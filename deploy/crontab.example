@@ -1,6 +1,11 @@
 # Example crontab for a daily cycle. cron fires on wall-clock weekdays; the trading-day guard
-# (python -m swingcore.trading_day_guard) is what skips NYSE holidays, and it exits non-zero so the
-# cycle after `&&` never starts on a closed day.
+# (python -m swingcore.trading_day_guard) is what skips NYSE holidays. It exits 1 on a closed day and
+# 255 when it cannot tell (e.g. the holiday calendar does not cover the year); either way the cycle
+# after `&&` never starts, and on 255 the error line reaches cron's mail.
+#
+# CRON_TZ is a cronie extension (Fedora/RHEL/Arch). Debian/Ubuntu's stock cron ignores it and fires
+# on the machine's timezone, so there either set the machine to America/New_York or use the systemd
+# timer in deploy/systemd, whose OnCalendar= carries its own timezone.
 CRON_TZ=America/New_York
 SHELL=/bin/bash
 

@@ -13,6 +13,12 @@ replay of a past morning sees what that morning could have seen and nothing rest
 Payloads are keyed (kind, key, as_of); a re-fetch overwrites the row and moves `fetched_at`
 forward, which is exactly what makes a `known_at` replay report "not yet known" rather than
 quietly serving the restated value.
+
+A payload's `as_of` is returned exactly as the caller wrote it, because its date part is the
+session it belongs to (the runtime and the manifest both compare `as_of[:10]`). The cut-off and the
+ordering use a second column, `as_of_utc`, holding the same instant on the UTC clock: two stamps
+written with different offsets cannot be compared as text without serving a later value to an
+earlier read.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ CREATE TABLE IF NOT EXISTS fetch_log (
 CREATE TABLE IF NOT EXISTS payloads (
     kind TEXT NOT NULL, key TEXT NOT NULL, as_of TEXT NOT NULL,
     source TEXT NOT NULL, payload TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT '',
+    as_of_utc TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (kind, key, as_of)
 );
 """
@@ -56,7 +63,7 @@ def utcnow_iso() -> str:
 
 
 def _utc(stamp: str) -> str:
-    """An ISO stamp in UTC, so `fetched_at` comparisons are string comparisons on one clock.
+    """An ISO stamp in UTC, so timestamp comparisons are string comparisons on one clock.
 
     A bare date means the start of that UTC day. Offsets are converted rather than trusted, because
     `2026-09-14T20:00:00-04:00` sorts *before* `2026-09-14T21:00:00+00:00` as text but is the later
@@ -154,9 +161,16 @@ class Cache:
     def _migrate(self) -> None:
         """Add columns a cache file written by an earlier version has no room for."""
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(payloads)")}
-        if "fetched_at" not in columns:
-            with self.conn:
+        with self.conn:
+            if "fetched_at" not in columns:
                 self.conn.execute("ALTER TABLE payloads ADD COLUMN fetched_at TEXT NOT NULL DEFAULT ''")
+            if "as_of_utc" not in columns:
+                self.conn.execute("ALTER TABLE payloads ADD COLUMN as_of_utc TEXT NOT NULL DEFAULT ''")
+            stale = self.conn.execute("SELECT DISTINCT as_of FROM payloads WHERE as_of_utc=''").fetchall()
+            self.conn.executemany(
+                "UPDATE payloads SET as_of_utc=? WHERE as_of=? AND as_of_utc=''",
+                [(_utc(row[0]), row[0]) for row in stale],
+            )
 
     # ---- bars -------------------------------------------------------------
     def upsert_bars(self, ticker: str, bars: pd.DataFrame, source: str, fetched_at: str | None = None) -> int:
@@ -233,15 +247,18 @@ class Cache:
     ) -> str:
         """Store one payload under (kind, key, as_of), stamped with the moment it was written.
 
+        `as_of` is kept as written and also stored on the UTC clock for the `get_payload` cut-off.
         `fetched_at` defaults to now. It is a parameter only so a fixture can record a download
         that really happened at another moment; nothing in a live run passes it.
         """
         as_of = as_of or utcnow_iso()
+        as_of_utc = _utc(as_of)
         stamp = _utc(fetched_at) if fetched_at else utcnow_iso()
         with self._lock, self.conn:
             self.conn.execute(
-                "INSERT OR REPLACE INTO payloads VALUES (?,?,?,?,?,?)",
-                (kind, key, as_of, source, json.dumps(payload, default=str), stamp),
+                "INSERT OR REPLACE INTO payloads (kind, key, as_of, source, payload, fetched_at, as_of_utc)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (kind, key, as_of, source, json.dumps(payload, default=str), stamp, as_of_utc),
             )
         return as_of
 
@@ -250,6 +267,9 @@ class Cache:
     ) -> CachedPayload | None:
         """Latest payload for (kind,key) with as_of <= given as_of, with both timestamps.
 
+        "Latest" and "<=" are decided on the UTC clock, so a row stamped 18:00 in New York is
+        later than a 21:00 UTC read and is refused, whatever offsets the two stamps were written in.
+
         With `known_at`, only a row fetched on or before that moment qualifies. A row whose
         `fetched_at` is blank (written before the column existed) cannot prove when it was learned,
         so a `known_at` read refuses it rather than assuming it was always there.
@@ -257,13 +277,15 @@ class Cache:
         q = "SELECT payload, as_of, fetched_at FROM payloads WHERE kind=? AND key=?"
         params: list[Any] = [kind, key]
         if as_of:
-            q += " AND as_of<=?"
-            params.append(as_of)
+            q += " AND as_of_utc<=?"
+            params.append(_utc(as_of))
         if known_at:
             q += " AND fetched_at<>'' AND fetched_at<=?"
             params.append(_utc(known_at))
         with self._lock:
-            row = self.conn.execute(q + " ORDER BY as_of DESC LIMIT 1", params).fetchone()
+            row = self.conn.execute(
+                q + " ORDER BY as_of_utc DESC, fetched_at DESC LIMIT 1", params
+            ).fetchone()
         return CachedPayload(json.loads(row[0]), row[1], row[2] or "") if row else None
 
     def payload_keys_like(self, kind: str, prefix: str, as_of_day: str) -> list[str]:
@@ -274,6 +296,10 @@ class Cache:
         agent about this ticker today, under some other input?". Only the day part of `as_of` is
         compared, because a cycle stamps every row with the same session timestamp and two runs of
         the same morning differ in `fetched_at`, not in `as_of`.
+
+        The day is the session day as the stamp was written (`as_of[:10]`), not its UTC day: that is
+        the day the runtime compares when it decides whether a cached reply belongs to this run, and
+        an evening stamp in New York would otherwise fall on the next UTC day.
 
         Rows are ordered by `fetched_at`, so the last key returned is the most recently written one.
         `%` and `_` in `prefix` are escaped: agent names contain underscores, and an unescaped one

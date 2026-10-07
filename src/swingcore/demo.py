@@ -173,9 +173,18 @@ def stage_summary(
     tables: dict[str, dict[str, float | None]],
     answers: dict[str, dict[str, dict[str, Any]]],
 ) -> None:
-    """A pure-Python roll-up. A ticker without a trend gets a named gap, never a default."""
+    """A pure-Python roll-up. A ticker without a trend gets a named gap, never a default.
+
+    The gap says which absence it is: a ticker research never reached is not one whose agent ran and
+    came back empty, and a reader of the manifest has to be able to tell the two apart.
+    """
+    research = next((s for s in run.stages if s["stage"] == "research"), None)
     for ticker in sorted(tables):
-        trend = answers.get(ticker, {}).get("echo_trend_agent")
+        if ticker not in answers:
+            why = research["note"] if research and research["status"] == "not_run" else "over the budget"
+            run.gap(ticker, "summary", f"no summary: research was not run for this ticker ({why})")
+            continue
+        trend = answers[ticker].get("echo_trend_agent")
         if trend is None:
             run.gap(ticker, "summary", "no summary: echo_trend_agent produced no valid output")
             continue
@@ -212,10 +221,25 @@ def print_stages(manifest: dict[str, Any]) -> None:
         print(f"  GAP     {g['ticker']}.{g['field']}: {g['detail'][:120]}")
 
 
+def non_negative_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or more, got {value}")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Run the toy cycle on recorded fixtures and print its manifest.")
     p.add_argument("--dry-run", action="store_true", help="replay recorded fixtures (the only mode here)")
-    p.add_argument("--free-slots", type=int, default=1, help="open slots in the toy book (0 closes the gate)")
+    p.add_argument(
+        "--free-slots",
+        type=non_negative_int,
+        default=1,
+        help="open slots in the toy book (0 closes the gate)",
+    )
     p.add_argument("--out", type=Path, help="also write the manifest JSON to this path")
     args = p.parse_args(argv)
     if not args.dry_run:
@@ -226,7 +250,11 @@ def main(argv: list[str] | None = None) -> int:
     text = json.dumps(manifest, indent=1)
     print(text)
     if args.out:
-        args.out.write_text(text + "\n")
+        try:
+            args.out.write_text(text + "\n")
+        except OSError as exc:
+            print(f"error: could not write the manifest to {args.out}: {exc}", file=sys.stderr)
+            return 2
     return 0
 
 

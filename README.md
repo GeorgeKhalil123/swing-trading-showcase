@@ -89,14 +89,14 @@ run replays a day on fixtures without calling any outside service, and the manif
 `backend: fake` so a rehearsal can never be mistaken for research. *Tradeoff:* fixtures go stale as
 schemas evolve, so they have to be maintained alongside the schemas they are validated against.
 
-## Numbers (from the private repository)
+## Numbers (from the private repository, as of 2026-10-07)
 
 | what | value | how it was counted |
 |---|---|---|
-| tests | 1,305 collected | `pytest --collect-only -q` |
-| test functions | 1,129 | `grep -rE '^\s*(async )?def test_' tests \| wc -l` (parametrize expands them) |
+| tests | 1,329 collected | `pytest --collect-only -q` |
+| test functions | 1,149 | `grep -rE '^\s*(async )?def test_' tests \| wc -l` (parametrize expands them) |
 | agents | 23 | agent table in the architecture document |
-| Python under `src/` | 29,766 lines | `find src -name '*.py' \| xargs cat \| wc -l` |
+| Python under `src/` | 30,055 lines | `find src -name '*.py' \| xargs cat \| wc -l` |
 | static checks | ruff, mypy `strict = true` | `pyproject.toml` |
 
 ## What's in this repo vs. private
@@ -151,6 +151,11 @@ run 2026-09-14-morning-dryrun  backend=fake  as_of=2026-09-14T16:30:00-04:00
 ```
 
 `deploy/` has an example crontab and a systemd timer/service pair, both gated on the trading-day guard.
+The guard exits 0 on a session, 1 on a weekend or holiday, and 255 when it cannot tell (for example,
+a year the holiday list does not cover), so under systemd's `ExecCondition=` a closed day is skipped
+but a guard that could not check fails the unit. The units use `%h` and are meant to be installed as
+user units (`~/.config/systemd/user`, `systemctl --user`); the crontab relies on `CRON_TZ`, which
+cronie supports and Debian/Ubuntu's stock cron does not.
 
 ## Layout
 

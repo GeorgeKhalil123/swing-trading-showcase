@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from datetime import date
+from datetime import UTC, date, datetime, tzinfo
 from pathlib import Path
 
 import pytest
 
+from swingcore import trading_day_guard
 from swingcore.calendar import (
     is_trading_day,
     last_trading_day,
@@ -72,7 +73,7 @@ def test_a_trading_day_lets_the_cycle_run() -> None:
 
 
 def test_a_date_it_cannot_parse_is_not_treated_as_a_pass() -> None:
-    """Exit 2 is not exit 0: a guard that could not check is not a guard that passed."""
+    """A guard that could not check is not a guard that passed."""
     result = guard("--date", "not-a-date")
     assert result.returncode == CANNOT_TELL and "error:" in result.stderr
 
@@ -81,6 +82,32 @@ def test_a_year_the_toy_calendar_does_not_cover_is_not_treated_as_a_pass() -> No
     """Outside the listed years every weekday would look open; the guard refuses to guess."""
     result = guard("--date", "2031-01-01")
     assert result.returncode == CANNOT_TELL and "does not cover 2031" in result.stderr
+
+
+def test_cannot_tell_fails_a_systemd_unit_instead_of_skipping_it() -> None:
+    """`ExecCondition=` treats exit 1-254 as "condition not met, skip" and logs nothing alarming.
+
+    Only 255 marks the unit failed, so "the calendar does not cover this year" has to be 255 or it
+    is indistinguishable from a holiday. The same goes for a mistyped flag in the unit file.
+    """
+    assert CANNOT_TELL == 255 and NOT_A_SESSION in range(1, 255)
+    result = guard("--no-such-flag")
+    assert result.returncode == CANNOT_TELL and "unrecognized arguments" in result.stderr
+
+
+def test_the_default_date_is_today_in_new_york_not_on_the_machine_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At 23:30 in New York a UTC server is already on the next date; the guard must not be."""
+
+    class LateEvening(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> LateEvening:
+            instant = datetime(2026, 9, 15, 3, 30, tzinfo=UTC)  # 2026-09-14 23:30 in New York
+            return cls.fromtimestamp(instant.timestamp(), tz)
+
+    monkeypatch.setattr(trading_day_guard, "datetime", LateEvening)
+    assert trading_day_guard.parse_args([]).date == "2026-09-14"
 
 
 def test_session_arithmetic_steps_over_weekends_and_holidays() -> None:

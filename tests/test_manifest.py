@@ -120,6 +120,18 @@ def test_a_closed_gate_buys_no_research_and_says_so() -> None:
     assert demo.research_budget(2) == 2 * demo.CANDIDATES_PER_FREE_SLOT
 
 
+def test_a_closed_gate_says_research_never_ran_not_that_an_agent_came_back_empty() -> None:
+    closed = demo.cycle(free_slots=0)
+    summary_gaps = {g["ticker"]: g["detail"] for g in closed["data_gaps"] if g["field"] == "summary"}
+    assert set(summary_gaps) == {"AAA", "BBB"}
+    for detail in summary_gaps.values():
+        assert "research was not run" in detail and "gate closed" in detail
+        assert "produced no valid output" not in detail, "nothing was asked, so nothing came back empty"
+    opened = demo.cycle(free_slots=1)
+    bbb = next(g["detail"] for g in opened["data_gaps"] if g["ticker"] == "BBB" and g["field"] == "summary")
+    assert "echo_trend_agent produced no valid output" in bbb, "a run that failed still says so"
+
+
 def test_the_demo_cli_prints_and_writes_the_manifest(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -129,3 +141,18 @@ def test_the_demo_cli_prints_and_writes_the_manifest(
     assert "research   failed" in printed and "GAP     BBB.headlines" in printed
     assert json.loads(out.read_text())["run_id"] == "2026-09-14-morning-dryrun"
     assert demo.main([]) == 2, "there is no live mode to fall back to"
+
+
+def test_the_demo_cli_refuses_a_negative_slot_count(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_:
+        demo.main(["--dry-run", "--free-slots", "-1"])
+    assert exit_.value.code == 2 and "must be 0 or more" in capsys.readouterr().err
+
+
+def test_the_demo_cli_reports_an_unwritable_out_path_without_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "no-such-dir" / "manifest.json"
+    assert demo.main(["--dry-run", "--out", str(missing)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: could not write the manifest") and "Traceback" not in err
