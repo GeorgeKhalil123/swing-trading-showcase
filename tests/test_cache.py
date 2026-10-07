@@ -7,7 +7,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from swingcore.bitemporal_cache import Cache, is_lookahead, lookahead_gap, newest_session
+import pandas as pd
+
+from swingcore.bitemporal_cache import (
+    Cache,
+    as_of_utc,
+    is_lookahead,
+    lookahead_gap,
+    newest_session,
+    session_day,
+)
 from swingcore.synthetic import make_bars
 
 
@@ -104,6 +113,47 @@ def test_the_latest_payload_is_the_latest_instant_not_the_largest_string(cache: 
     assert hit is not None and hit.data == {"eps": 2.0}, "22:00 UTC is later than 21:00 UTC"
 
 
+def test_a_bare_date_is_the_start_of_that_new_york_day_not_utc_midnight(cache: Cache) -> None:
+    """UTC midnight on the 15th is 20:00 on the 14th in New York, so reading "2026-09-15" as UTC
+    would serve a row labelled with the 15th to the evening of the 14th."""
+    cache.put_payload("fund", "K", {"eps": 1.0}, "synthetic", as_of="2026-09-15")
+    assert cache.get_payload("fund", "K", as_of="2026-09-14T22:00:00-04:00") is None
+    assert cache.get_payload("fund", "K", as_of="2026-09-15T00:00:00-04:00") is not None
+    assert cache.get_payload("fund", "K", as_of="2026-09-15") is not None
+
+
+def test_a_stamp_without_an_offset_is_new_york_time(cache: Cache) -> None:
+    cache.put_payload("fund", "L", {"eps": 1.0}, "synthetic", as_of="2026-09-14T18:00:00")
+    assert cache.get_payload("fund", "L", as_of="2026-09-14T21:30:00+00:00") is None, "17:30 New York"
+    assert cache.get_payload("fund", "L", as_of="2026-09-14T22:00:00+00:00") is not None
+
+
+def test_as_of_keeps_sub_second_order(cache: Cache) -> None:
+    cache.put_payload("fund", "M", {"eps": 1.0}, "synthetic", as_of="2026-09-14T20:00:00.900000+00:00")
+    assert cache.get_payload("fund", "M", as_of="2026-09-14T20:00:00.100000+00:00") is None
+    assert cache.get_payload("fund", "M", as_of="2026-09-14T20:00:00.900000+00:00") is not None
+    assert as_of_utc("2026-09-14T16:00:00-04:00") == "2026-09-14T20:00:00.000000+00:00", "fixed width"
+
+
+def test_the_bar_cut_off_is_the_new_york_date_of_an_offset_stamp(cache: Cache) -> None:
+    """01:00 UTC on the 15th is 21:00 on the 14th in New York: the 15th's bar does not exist yet."""
+    days = pd.bdate_range("2026-09-14", periods=2)
+    bars = pd.DataFrame({c: [1.0, 2.0] for c in ("open", "high", "low", "close", "volume")}, index=days)
+    cache.upsert_bars("N", bars, "synthetic")
+    got = cache.get_bars("N", as_of="2026-09-15T01:00:00+00:00")
+    assert [d.date().isoformat() for d in got.index] == ["2026-09-14"]
+    assert session_day("2026-09-15T01:00:00+00:00") == "2026-09-14"
+    assert session_day("2026-09-15") == "2026-09-15"
+
+
+def test_lookahead_uses_the_new_york_date_of_an_offset_stamp() -> None:
+    """After the close of the 15th, a stamp at 21:00 New York on the 14th is a past session."""
+    after_close = datetime(2026, 9, 15, 17, 0, tzinfo=ZoneInfo("America/New_York"))
+    assert is_lookahead("2026-09-15T01:00:00+00:00", now=after_close)
+    assert "as_of 2026-09-14" in lookahead_gap("2026-09-15T01:00:00+00:00", "bars", now=after_close)
+    assert not is_lookahead("2026-09-15T21:00:00+00:00", now=after_close)
+
+
 def test_bars_downloaded_after_the_replay_moment_are_refused(cache: Cache) -> None:
     df = make_bars(n=20)
     cache.upsert_bars("F", df.iloc[:10], "synthetic", fetched_at="2025-01-20T00:00:00+00:00")
@@ -128,9 +178,48 @@ def test_a_cache_file_written_before_fetched_at_existed_is_migrated(tmp_path: Pa
     assert migrated.get_payload("fund", "D", known_at="2030-01-01") is None, (
         "unknown fetch time is not 'always'"
     )
-    assert migrated.get_payload("fund", "D", as_of="2024-12-31T23:00:00-05:00") is not None, (
+    assert migrated.get_payload("fund", "D", as_of="2025-01-01T00:00:00-05:00") is not None, (
         "an old row is given a UTC stamp, so offset-aware cut-offs still find it"
     )
+    assert migrated.get_payload("fund", "D", as_of="2024-12-31T23:00:00-05:00") is None, (
+        "and a New Year's Eve read still does not see a row dated New Year's Day"
+    )
+
+
+def _legacy_payloads(path: Path, rows: list[tuple[str, str, str]]) -> None:
+    """A payloads table as the version before `as_of_utc` wrote it: (key, as_of, as_of_utc) rows."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE payloads (kind TEXT NOT NULL, key TEXT NOT NULL, as_of TEXT NOT NULL,"
+        " source TEXT NOT NULL, payload TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT '',"
+        " as_of_utc TEXT NOT NULL DEFAULT '', PRIMARY KEY (kind, key, as_of))"
+    )
+    conn.executemany(
+        "INSERT INTO payloads VALUES ('fund', ?, ?, 'synthetic', '{}', '', ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_a_legacy_row_with_an_unparseable_as_of_opens_but_is_never_served(tmp_path: Path) -> None:
+    """Refusing to open the whole cache over one bad row would be worse; serving it would be wrong."""
+    path = tmp_path / "bad.sqlite"
+    _legacy_payloads(path, [("BAD", "last tuesday", ""), ("OK", "2025-01-02", "")])
+    migrated = Cache(path)
+    assert migrated.get_payload("fund", "BAD") is None
+    assert migrated.get_payload("fund", "BAD", as_of="2030-01-01") is None
+    assert migrated.get_payload("fund", "OK", as_of="2025-01-03") is not None
+
+
+def test_stamps_written_by_the_previous_as_of_utc_shape_are_recomputed(tmp_path: Path) -> None:
+    """The first `as_of_utc` had no microseconds and read a bare date as UTC midnight."""
+    path = tmp_path / "v1.sqlite"
+    _legacy_payloads(path, [("J", "2026-09-15", "2026-09-15T00:00:00+00:00")])
+    migrated = Cache(path)
+    assert migrated.get_payload("fund", "J", as_of="2026-09-14T22:00:00-04:00") is None
+    stored = migrated.conn.execute("SELECT as_of_utc FROM payloads WHERE key='J'").fetchone()[0]
+    assert stored == "2026-09-15T04:00:00.000000+00:00"
 
 
 def test_payload_keys_like_returns_same_day_rows_only(cache: Cache) -> None:

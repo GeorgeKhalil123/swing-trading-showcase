@@ -1,6 +1,6 @@
 # TOY CALENDAR. Full-day NYSE closures for the years below, typed by hand; no early closes.
 # The private system asks pandas_market_calendars instead. This file exists so the showcase has no
-# calendar dependency, and `swingcore.trading_day_guard` refuses (exit 2) any year it does not list.
+# calendar dependency, and `swingcore.trading_day_guard` refuses (exit 255) any year it does not list.
 years: [2025, 2026, 2027]
 holidays:
   - 2025-01-01  # New Year's Day

@@ -19,6 +19,13 @@ session it belongs to (the runtime and the manifest both compare `as_of[:10]`). 
 ordering use a second column, `as_of_utc`, holding the same instant on the UTC clock: two stamps
 written with different offsets cannot be compared as text without serving a later value to an
 earlier read.
+
+`as_of` is exchange time. A stamp with an offset is the instant it names; a bare date or a stamp
+without an offset is read on the New York clock, a bare date as the start of that New York day (the
+moment the day's label first applies, which is also how a bare date compared before stamps carried
+offsets). Its day - for a bar cut-off or the lookahead rule - is the New York date of that instant,
+so `2026-09-15T01:00:00+00:00` belongs to the evening of September 14. `fetched_at` and `known_at`
+are machine time and keep reading an offset-less stamp as UTC.
 """
 
 from __future__ import annotations
@@ -31,6 +38,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import pandas as pd
+
+from swingcore.calendar import NEW_YORK
 
 BAR_COLUMNS = ["open", "high", "low", "close", "volume"]
 
@@ -75,6 +84,30 @@ def _utc(stamp: str) -> str:
     return parsed.astimezone(UTC).replace(microsecond=0).isoformat()
 
 
+def _as_of_instant(stamp: str) -> datetime:
+    """The instant an `as_of` names: offsets are honoured, everything else is New York time."""
+    parsed = datetime.fromisoformat(stamp)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=NEW_YORK)
+
+
+def as_of_utc(stamp: str) -> str:
+    """An `as_of` on the UTC clock, fixed width down to the microsecond.
+
+    Every value has the same `YYYY-MM-DDTHH:MM:SS.ffffff+00:00` shape, so comparing two of them as
+    text is comparing the instants; dropping the microseconds would let a row at 20:00:00.9 through
+    to a read at 20:00:00.1.
+    """
+    return _as_of_instant(stamp).astimezone(UTC).isoformat(timespec="microseconds")
+
+
+AS_OF_UTC_SHAPE = "____-__-__T__:__:__.______+00:00"  # LIKE pattern of a value `as_of_utc` wrote
+
+
+def session_day(as_of: str) -> str:
+    """The New York date an `as_of` falls on, which is the session it can know about."""
+    return _as_of_instant(as_of).astimezone(NEW_YORK).date().isoformat()
+
+
 def newest_session(now: datetime | None = None) -> date:
     """The most recent NYSE session whose close had already passed at `now` (default: right now).
 
@@ -99,13 +132,13 @@ def is_lookahead(as_of: str, now: datetime | None = None) -> bool:
     true only once at least one more session has closed since. `fetched_at` on every row records the
     real retrieval moment, so a replay can still see the gap between the two.
     """
-    return as_of[:10] < newest_session(now).isoformat()
+    return session_day(as_of) < newest_session(now).isoformat()
 
 
 def lookahead_gap(as_of: str, what: str, now: datetime | None = None) -> str:
     """The gap text a caller records instead of fetching."""
     return (
-        f"insufficient_data: as_of {as_of[:10]} is an older session than the newest completed one "
+        f"insufficient_data: as_of {session_day(as_of)} is an older session than the newest completed one "
         f"({newest_session(now).isoformat()}), so fetching {what} now would label a later session's "
         "values with a past date. Nothing was fetched; only what the cache already holds for that "
         "date may be used."
@@ -166,11 +199,25 @@ class Cache:
                 self.conn.execute("ALTER TABLE payloads ADD COLUMN fetched_at TEXT NOT NULL DEFAULT ''")
             if "as_of_utc" not in columns:
                 self.conn.execute("ALTER TABLE payloads ADD COLUMN as_of_utc TEXT NOT NULL DEFAULT ''")
-            stale = self.conn.execute("SELECT DISTINCT as_of FROM payloads WHERE as_of_utc=''").fetchall()
-            self.conn.executemany(
-                "UPDATE payloads SET as_of_utc=? WHERE as_of=? AND as_of_utc=''",
-                [(_utc(row[0]), row[0]) for row in stale],
-            )
+            self._backfill_as_of_utc()
+
+    def _backfill_as_of_utc(self) -> None:
+        """Give every row a current-shape `as_of_utc`: rows from before the column, and rows an
+        earlier version stamped without microseconds or with a bare date read as UTC midnight.
+
+        A row whose `as_of` does not parse keeps a blank, and `get_payload` never serves a blank:
+        a row that cannot say what moment it describes cannot pass a point-in-time cut-off.
+        """
+        stale = self.conn.execute(
+            "SELECT DISTINCT as_of FROM payloads WHERE as_of_utc NOT LIKE ?", (AS_OF_UTC_SHAPE,)
+        ).fetchall()
+        updates = []
+        for (raw,) in stale:
+            try:
+                updates.append((as_of_utc(raw), raw))
+            except ValueError:
+                updates.append(("", raw))
+        self.conn.executemany("UPDATE payloads SET as_of_utc=? WHERE as_of=?", updates)
 
     # ---- bars -------------------------------------------------------------
     def upsert_bars(self, ticker: str, bars: pd.DataFrame, source: str, fetched_at: str | None = None) -> int:
@@ -206,8 +253,8 @@ class Cache:
         known_at: str | None = None,
     ) -> pd.DataFrame:
         """Return bars with start <= date <= end. `as_of` (ISO) additionally refuses any bar
-        whose date is after as_of's calendar date, enforcing point-in-time discipline; `known_at`
-        refuses any bar the cache had not yet fetched at that moment."""
+        whose date is after as_of's New York date (`session_day`), enforcing point-in-time
+        discipline; `known_at` refuses any bar the cache had not yet fetched at that moment."""
         q = "SELECT date,open,high,low,close,volume FROM bars WHERE ticker=?"
         params: list[Any] = [ticker]
         if start:
@@ -215,7 +262,7 @@ class Cache:
             params.append(start)
         hard_end = end
         if as_of:
-            as_of_date = as_of[:10]
+            as_of_date = session_day(as_of)
             hard_end = min(end, as_of_date) if end else as_of_date
         if hard_end:
             q += " AND date<=?"
@@ -252,13 +299,13 @@ class Cache:
         that really happened at another moment; nothing in a live run passes it.
         """
         as_of = as_of or utcnow_iso()
-        as_of_utc = _utc(as_of)
+        utc_as_of = as_of_utc(as_of)
         stamp = _utc(fetched_at) if fetched_at else utcnow_iso()
         with self._lock, self.conn:
             self.conn.execute(
                 "INSERT OR REPLACE INTO payloads (kind, key, as_of, source, payload, fetched_at, as_of_utc)"
                 " VALUES (?,?,?,?,?,?,?)",
-                (kind, key, as_of, source, json.dumps(payload, default=str), stamp, as_of_utc),
+                (kind, key, as_of, source, json.dumps(payload, default=str), stamp, utc_as_of),
             )
         return as_of
 
@@ -269,16 +316,17 @@ class Cache:
 
         "Latest" and "<=" are decided on the UTC clock, so a row stamped 18:00 in New York is
         later than a 21:00 UTC read and is refused, whatever offsets the two stamps were written in.
+        A row whose `as_of` could not be parsed (only possible in a migrated file) is never served.
 
         With `known_at`, only a row fetched on or before that moment qualifies. A row whose
         `fetched_at` is blank (written before the column existed) cannot prove when it was learned,
         so a `known_at` read refuses it rather than assuming it was always there.
         """
-        q = "SELECT payload, as_of, fetched_at FROM payloads WHERE kind=? AND key=?"
+        q = "SELECT payload, as_of, fetched_at FROM payloads WHERE kind=? AND key=? AND as_of_utc<>''"
         params: list[Any] = [kind, key]
         if as_of:
             q += " AND as_of_utc<=?"
-            params.append(_utc(as_of))
+            params.append(as_of_utc(as_of))
         if known_at:
             q += " AND fetched_at<>'' AND fetched_at<=?"
             params.append(_utc(known_at))
