@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from swingcore.bitemporal_cache import Cache
+from swingcore.calendar import session_day
 from swingcore.llm.base import AgentCall, Backend, LLMError, LLMReply
 from swingcore.llm.cache_key import canonical_payload, input_hash, record_stale_miss
 from swingcore.models import AgentFailure, AgentUsage
@@ -180,7 +181,7 @@ class Runtime:
         if hit is None:
             return None
         stored, stored_as_of = hit.data, hit.as_of
-        if stored_as_of[:10] != as_of[:10]:  # same input, different day: re-run rather than replay
+        if session_day(stored_as_of) != session_day(as_of):  # same input, another session: re-run
             return None
         meta = stored.get("reply", {})
         if not meta:
@@ -227,7 +228,7 @@ class Runtime:
         earlier = [
             other
             for other in self.cache.payload_keys_like(
-                CACHE_KIND, self._cache_key(agent, ticker, ""), as_of[:10]
+                CACHE_KIND, self._cache_key(agent, ticker, ""), session_day(as_of)
             )
             if other != key
         ]
@@ -235,7 +236,7 @@ class Runtime:
             return
         with self._lock:
             self.stale_misses[agent] += 1
-        record_stale_miss(agent, as_of[:10])
+        record_stale_miss(agent, session_day(as_of))
         log.info(
             "%s on %s: same-day input changed; previous digest %s",
             agent,

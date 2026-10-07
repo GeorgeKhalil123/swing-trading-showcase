@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from swingcore.calendar import session_day
 from swingcore.models import AgentFailure, AgentUsage, DataGap, RunStage, StageStatus, TickerMeta
 from swingcore.schemas import SchemaValidationError, validate
 
@@ -136,14 +137,28 @@ def _check_failures(raw: Mapping[str, Any], problems: list[str]) -> None:
 
 
 def _check_research(raw: Mapping[str, Any], problems: list[str]) -> None:
-    """Every stored output answers for the ticker it is filed under, on this run's session."""
+    """Every stored output answers for the ticker it is filed under, on this run's session.
+
+    The session is the New York date of each stamp (`session_day`), so a reply stamped
+    `2026-09-15T01:00:00+00:00` belongs to September 14 and is refused by a September 15 run.
+    """
+    run_day = _session_or_none(str(raw["as_of"]))
     for ticker, rows in raw["research"].items():
         for row in rows:
             agent = row.get("agent", "?")
             if row.get("ticker") != ticker:
                 problems.append(f"{agent} output filed under {ticker} names {row.get('ticker')!r}")
-            if str(row.get("as_of", ""))[:10] != raw["as_of"][:10]:
-                problems.append(f"{agent}[{ticker}] is stamped {row.get('as_of')!r}, not {raw['as_of'][:10]}")
+            day = _session_or_none(str(row.get("as_of", "")))
+            if day is None or day != run_day:
+                problems.append(f"{agent}[{ticker}] is stamped {row.get('as_of')!r}, not session {run_day}")
+
+
+def _session_or_none(as_of: str) -> str | None:
+    """The session of a stamp, or None for one that does not parse (which matches no session)."""
+    try:
+        return session_day(as_of)
+    except ValueError:
+        return None
 
 
 def _check_usage(raw: Mapping[str, Any], problems: list[str]) -> None:

@@ -18,6 +18,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from swingcore.calendar import session_day
 from swingcore.llm.base import AgentCall, LLMError, LLMReply
 
 log = logging.getLogger(__name__)
@@ -41,13 +42,19 @@ class FakeBackend:
 
     def _restamp(self, data: dict[str, Any], call: AgentCall) -> None:
         recorded = str(data.get("as_of", ""))
-        if recorded and recorded[:10] != call.as_of[:10]:
+        if not recorded:
+            return
+        try:
+            same_session = session_day(recorded) == session_day(call.as_of)
+        except ValueError:  # a stamp that does not parse cannot be on this run's session
+            same_session = False
+        if not same_session:
             log.info(
                 "%s on %s: replaying a reply recorded as_of %s under this run's %s",
                 call.agent,
                 call.ticker,
-                recorded[:10],
-                call.as_of[:10],
+                recorded,
+                call.as_of,
             )
             data["as_of"] = call.as_of
 

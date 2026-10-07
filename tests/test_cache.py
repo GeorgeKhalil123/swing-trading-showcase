@@ -15,8 +15,8 @@ from swingcore.bitemporal_cache import (
     is_lookahead,
     lookahead_gap,
     newest_session,
-    session_day,
 )
+from swingcore.calendar import session_day
 from swingcore.synthetic import make_bars
 
 
@@ -242,6 +242,15 @@ def test_payload_keys_like_returns_same_day_rows_only(cache: Cache) -> None:
     assert keys == ["recorder|toy_headline_agent|AAA|aaa", "recorder|toy_headline_agent|AAA|bbb"]
     assert cache.payload_keys_like("agent", "recorder|toy_headline_agent|AAA|", "2026-09-16") == []
     assert len(cache.payload_keys_like("agent", "", "2026-09-14")) == 5, "an empty prefix means all"
+
+
+def test_payload_keys_like_matches_the_new_york_session_not_the_written_date(cache: Cache) -> None:
+    """01:00 UTC on the 15th was written as "2026-09-15" but is the evening of the 14th."""
+    cache.put_payload("agent", "r|a|AAA|late", {}, "r", as_of="2026-09-15T01:00:00+00:00")
+    cache.put_payload("agent", "r|a|AAA|next", {}, "r", as_of="2026-09-15T09:30:00-04:00")
+    assert cache.payload_keys_like("agent", "r|a|AAA|", "2026-09-14") == ["r|a|AAA|late"]
+    assert cache.payload_keys_like("agent", "r|a|AAA|", "2026-09-15") == ["r|a|AAA|next"]
+    assert cache.payload_keys_like("agent", "r|a|AAA|", "2026-09-15T00:30:00+00:00") == ["r|a|AAA|late"]
 
 
 def test_a_session_older_than_the_newest_close_is_flagged_as_lookahead_with_an_actionable_gap() -> None:

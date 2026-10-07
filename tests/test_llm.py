@@ -301,6 +301,22 @@ def test_changed_input_or_a_new_day_re_runs_the_agent(cache: Cache) -> None:
     assert len(backend.calls) == 3
 
 
+def test_a_reply_from_the_new_york_evening_is_not_replayed_into_the_next_session(cache: Cache) -> None:
+    """01:00 UTC on the 15th is 21:00 on the 14th in New York. As text both stamps say "2026-09-15",
+    and comparing the first ten characters replayed the 14th's reply into the 15th's session."""
+    rt, backend = runtime(*[json.dumps(VALID)] * 2, cache=cache)
+    run(rt, as_of="2026-09-15T01:00:00+00:00")
+    second = run(rt, as_of="2026-09-15T09:30:00-04:00")
+    assert not second.cached and len(backend.calls) == 2
+
+
+def test_one_new_york_session_written_in_two_offsets_is_one_cache_entry(cache: Cache) -> None:
+    rt, backend = runtime(json.dumps(VALID), cache=cache)
+    run(rt, as_of="2026-09-14T20:00:00-04:00")
+    second = run(rt, as_of="2026-09-15T00:30:00+00:00")  # 20:30 on the 14th in New York
+    assert second.cached and len(backend.calls) == 1
+
+
 def midday_payload(atr: float, minute: str) -> dict[str, Any]:
     """An intraday payload: an indicator off a re-pulled bar tail, and the minute it was pulled."""
     return {
@@ -371,6 +387,18 @@ def test_a_fixture_backed_run_counts_no_stale_miss(cache: Cache) -> None:
     run(rt, payload={"close": 100.0})
     run(rt, payload={"close": 101.0})
     assert not rt.stale_misses and stale_miss_report().total == 0
+
+
+def test_a_stale_miss_is_counted_on_the_new_york_session_not_the_utc_date(cache: Cache) -> None:
+    reset_stale_misses()
+    rt, _ = runtime(*[json.dumps(VALID)] * 4, cache=cache)
+    run(rt, payload={"close": 100.0}, as_of="2026-09-14T20:00:00-04:00")
+    run(rt, payload={"close": 101.0}, as_of="2026-09-15T00:30:00+00:00")  # same New York evening
+    assert rt.stale_misses == Counter({AGENT: 1})
+    assert stale_miss_report().days == ("2026-09-14",)
+    run(rt, payload={"close": 102.0}, as_of="2026-09-15T09:30:00-04:00")
+    assert rt.stale_misses == Counter({AGENT: 1}), "the next morning is a new session, not a stale miss"
+    reset_stale_misses()
 
 
 def test_usage_is_sorted_by_agent_not_by_who_answered_first() -> None:

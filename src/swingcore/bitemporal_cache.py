@@ -14,11 +14,11 @@ Payloads are keyed (kind, key, as_of); a re-fetch overwrites the row and moves `
 forward, which is exactly what makes a `known_at` replay report "not yet known" rather than
 quietly serving the restated value.
 
-A payload's `as_of` is returned exactly as the caller wrote it, because its date part is the
-session it belongs to (the runtime and the manifest both compare `as_of[:10]`). The cut-off and the
-ordering use a second column, `as_of_utc`, holding the same instant on the UTC clock: two stamps
-written with different offsets cannot be compared as text without serving a later value to an
-earlier read.
+A payload's `as_of` is returned exactly as the caller wrote it. Its session is
+`swingcore.calendar.session_day(as_of)`, the New York date of the instant, which is what the
+runtime, the fake backend and the manifest compare. The cut-off and the ordering use a second
+column, `as_of_utc`, holding the same instant on the UTC clock: two stamps written with different
+offsets cannot be compared as text without serving a later value to an earlier read.
 
 `as_of` is exchange time. A stamp with an offset is the instant it names; a bare date or a stamp
 without an offset is read on the New York clock, a bare date as the start of that New York day (the
@@ -33,13 +33,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import pandas as pd
 
-from swingcore.calendar import NEW_YORK
+from swingcore.calendar import as_of_instant, session_day
 
 BAR_COLUMNS = ["open", "high", "low", "close", "volume"]
 
@@ -84,12 +84,6 @@ def _utc(stamp: str) -> str:
     return parsed.astimezone(UTC).replace(microsecond=0).isoformat()
 
 
-def _as_of_instant(stamp: str) -> datetime:
-    """The instant an `as_of` names: offsets are honoured, everything else is New York time."""
-    parsed = datetime.fromisoformat(stamp)
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=NEW_YORK)
-
-
 def as_of_utc(stamp: str) -> str:
     """An `as_of` on the UTC clock, fixed width down to the microsecond.
 
@@ -97,15 +91,10 @@ def as_of_utc(stamp: str) -> str:
     text is comparing the instants; dropping the microseconds would let a row at 20:00:00.9 through
     to a read at 20:00:00.1.
     """
-    return _as_of_instant(stamp).astimezone(UTC).isoformat(timespec="microseconds")
+    return as_of_instant(stamp).astimezone(UTC).isoformat(timespec="microseconds")
 
 
 AS_OF_UTC_SHAPE = "____-__-__T__:__:__.______+00:00"  # LIKE pattern of a value `as_of_utc` wrote
-
-
-def session_day(as_of: str) -> str:
-    """The New York date an `as_of` falls on, which is the session it can know about."""
-    return _as_of_instant(as_of).astimezone(NEW_YORK).date().isoformat()
 
 
 def newest_session(now: datetime | None = None) -> date:
@@ -337,7 +326,7 @@ class Cache:
         return CachedPayload(json.loads(row[0]), row[1], row[2] or "") if row else None
 
     def payload_keys_like(self, kind: str, prefix: str, as_of_day: str) -> list[str]:
-        """Every key under `kind` that starts with `prefix` and is stamped on `as_of_day`.
+        """Every key under `kind` that starts with `prefix` and whose `as_of` falls on `as_of_day`.
 
         The agent cache keys its rows `backend|agent|ticker|digest`, so a prefix query over the
         first three fields answers the question the run itself cannot: "have I already asked this
@@ -345,20 +334,23 @@ class Cache:
         compared, because a cycle stamps every row with the same session timestamp and two runs of
         the same morning differ in `fetched_at`, not in `as_of`.
 
-        The day is the session day as the stamp was written (`as_of[:10]`), not its UTC day: that is
-        the day the runtime compares when it decides whether a cached reply belongs to this run, and
-        an evening stamp in New York would otherwise fall on the next UTC day.
+        The day is the New York session day (`session_day`), the same one the runtime compares
+        when it decides whether a cached reply belongs to this run: the rows match on `as_of_utc`
+        between the start of that New York day and the start of the next, so a stamp written in
+        UTC at 01:00 counts for the New York evening before. `as_of_day` may be a date or a stamp.
 
         Rows are ordered by `fetched_at`, so the last key returned is the most recently written one.
         `%` and `_` in `prefix` are escaped: agent names contain underscores, and an unescaped one
         is a single-character wildcard that would silently match a different agent.
         """
         escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        day = date.fromisoformat(session_day(as_of_day))
+        start, end = as_of_utc(day.isoformat()), as_of_utc((day + timedelta(days=1)).isoformat())
         with self._lock:
             rows = self.conn.execute(
-                "SELECT key FROM payloads WHERE kind=? AND key LIKE ? ESCAPE '\\' AND as_of LIKE ?"
-                " ORDER BY fetched_at, key",
-                (kind, escaped + "%", as_of_day[:10] + "%"),
+                "SELECT key FROM payloads WHERE kind=? AND key LIKE ? ESCAPE '\\'"
+                " AND as_of_utc>=? AND as_of_utc<? ORDER BY fetched_at, key",
+                (kind, escaped + "%", start, end),
             ).fetchall()
         return [str(row[0]) for row in rows]
 

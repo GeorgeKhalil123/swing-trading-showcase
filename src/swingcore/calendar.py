@@ -20,6 +20,25 @@ MARKET_CLOSE = time(16, 0)
 SEARCH_DAYS = 10  # a longer run of closed days than this means the holiday file is wrong
 
 
+def as_of_instant(stamp: str) -> datetime:
+    """The instant an `as_of` names: an offset is honoured, anything without one is New York time.
+
+    A bare date is therefore the start of that New York day. Raises ValueError on an unparseable
+    stamp.
+    """
+    parsed = datetime.fromisoformat(stamp)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=NEW_YORK)
+
+
+def session_day(as_of: str) -> str:
+    """The New York date an `as_of` falls on, which is the session it belongs to.
+
+    Every "same day?" question about an `as_of` goes through this, never through `as_of[:10]`:
+    `2026-09-15T01:00:00+00:00` is 21:00 on September 14 in New York.
+    """
+    return as_of_instant(as_of).astimezone(NEW_YORK).date().isoformat()
+
+
 @cache
 def _calendar() -> tuple[frozenset[date], frozenset[int]]:
     raw = yaml.safe_load(HOLIDAYS_FILE.read_text()) or {}

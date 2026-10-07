@@ -81,6 +81,19 @@ def test_an_output_filed_under_the_wrong_ticker_or_day_is_refused(manifest: dict
     assert "stamped '2026-09-11" in str(exc.value) and "names 'ZZZ'" in str(exc.value)
 
 
+def test_an_output_from_the_new_york_evening_before_is_refused(manifest: dict[str, Any]) -> None:
+    """The run is the 14th at 16:30 New York; 01:00 UTC on the 15th is still the 14th there and
+    passes, 13:00 UTC on the 15th does not, and a stamp that does not parse never passes."""
+    same_session = copy.deepcopy(manifest)
+    same_session["research"]["AAA"][0]["as_of"] = "2026-09-15T01:00:00+00:00"
+    cross_check(same_session)
+    for stamp in ("2026-09-15T13:00:00+00:00", "not a stamp"):
+        broken = copy.deepcopy(manifest)
+        broken["research"]["AAA"][0]["as_of"] = stamp
+        with pytest.raises(ManifestError, match="not session 2026-09-14"):
+            cross_check(broken)
+
+
 def test_a_run_cannot_spend_more_than_its_answers_cost(manifest: dict[str, Any]) -> None:
     broken = copy.deepcopy(manifest)
     broken["usage"][0]["spent_usd"] = 1.0

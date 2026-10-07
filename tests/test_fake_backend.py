@@ -36,6 +36,19 @@ def test_a_replay_is_re_stamped_with_the_run_that_is_replaying_it() -> None:
     }, "only the stamp may change: no trend, number or note is rewritten"
 
 
+def test_a_recording_from_the_new_york_evening_before_is_re_stamped(tmp_path: Path) -> None:
+    """Recorded at 01:00 UTC on the 15th, which is the evening of the 14th in New York."""
+    (tmp_path / "a_agent").mkdir()
+    (tmp_path / "a_agent" / "AAA.json").write_text('{"as_of": "2026-09-15T01:00:00+00:00"}')
+    backend = FakeBackend(tmp_path)
+    next_day = AgentCall("a_agent", "AAA", "2026-09-15T16:30:00-04:00", "s", "p", "m")
+    assert json.loads(backend.complete(next_day).text)["as_of"] == "2026-09-15T16:30:00-04:00"
+    same_evening = AgentCall("a_agent", "AAA", "2026-09-14T22:00:00-04:00", "s", "p", "m")
+    assert json.loads(backend.complete(same_evening).text)["as_of"] == "2026-09-15T01:00:00+00:00", (
+        "a recording from the same session keeps its own stamp"
+    )
+
+
 def test_a_reply_that_is_not_json_is_replayed_untouched() -> None:
     """A deliberately malformed fixture still has to exercise the runtime's retry path."""
     backend = FakeBackend(FIXTURES)
